@@ -1,0 +1,116 @@
+import cv2
+import numpy as np
+import time
+import requests  # Import the requests library for HTTP requests
+
+# Define color ranges for different fruits in HSV
+FRUIT_RANGES = {
+    "Apple": [(0, 120, 70), (10, 255, 255)],       # Red
+    "Banana": [(20, 100, 100), (30, 255, 255)],   # Yellow
+    "Orange": [(5, 100, 100), (15, 255, 255)],    # Orange
+    "Grapes": [(35, 50, 50), (75, 255, 255)],     # Green
+    "Blueberry": [(100, 150, 0), (140, 255, 255)] # Blue
+}
+
+# Function to detect fruits based on color and shape
+def detect_fruits(frame):
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    detected_fruits = []
+    
+    for fruit, (lower, upper) in FRUIT_RANGES.items():
+        # Create a mask for the color range
+        mask = cv2.inRange(hsv, np.array(lower), np.array(upper))
+        
+        # Find contours
+        contours, _ = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if 500 < area < 5000:  # Filter small areas (noise) and very large areas (background)
+                # Approximate the shape
+                perimeter = cv2.arcLength(contour, True)
+                approx = cv2.approxPolyDP(contour, 0.02 * perimeter, True)
+                x, y, w, h = cv2.boundingRect(approx)
+                
+                # Calculate the aspect ratio of the bounding box
+                aspect_ratio = float(w) / h
+                circularity = (4 * np.pi * area) / (perimeter ** 2)  # Circularity measure
+                
+                # Shape filtering based on aspect ratio and circularity
+                if fruit == "Apple" and 0.8 < aspect_ratio < 1.2 and circularity > 0.7:
+                    fruit_type = "Apple"
+                elif fruit == "Banana" and aspect_ratio > 2.0 and circularity < 0.5:
+                    fruit_type = "Banana"
+                elif fruit == "Orange" and 0.8 < aspect_ratio < 1.2 and circularity > 0.6:
+                    fruit_type = "Orange"
+                else:
+                    fruit_type = None
+                
+                # Further distinguish fruits with overlapping colors
+                if fruit_type:
+                    # Draw bounding box and label
+                    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                    cv2.putText(frame, fruit_type, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                    detected_fruits.append(fruit_type)
+    
+    return frame, detected_fruits
+
+# Send fruit name to ESP8266 via HTTP POST
+def send_fruit_to_esp(fruit_name):
+    url = "http://<ESP8266_IP>/set_fruit"
+    data = {"fruit": fruit_name}
+    try:
+        response = requests.post(url, json=data)
+        if response.status_code == 200:
+            print(f"Successfully sent {fruit_name} to ESP8266")
+        else:
+            print(f"Failed to send data: {response.status_code}")
+    except Exception as e:
+        print(f"Error sending data: {e}")
+
+# Initialize webcam
+cap = cv2.VideoCapture(0)
+
+if not cap.isOpened():
+    print("Error: Webcam not detected or cannot be accessed.")
+    exit()
+
+fruit_detected = False
+detected_fruit = None
+
+while not fruit_detected:
+    ret, frame = cap.read()
+    if not ret:
+        print("Error: Unable to capture a frame.")
+        break
+
+    # Detect fruits
+    processed_frame, fruits = detect_fruits(frame)
+
+    # Display the result
+    cv2.imshow("Fruit Detection", processed_frame)
+
+    # Check if any fruit is detected
+    if fruits:
+        fruit_detected = True
+        detected_fruit = fruits[0]  # Assuming the first detected fruit is the target
+        print("Detected Fruit:", detected_fruit)
+
+        # Send the detected fruit to ESP8266
+        send_fruit_to_esp(detected_fruit)
+
+    # Add a delay to allow better detection (increased to 1 second)
+    time.sleep(1)  # Adjust delay to 1 second (1000 milliseconds)
+
+    # Press 'q' to exit manually
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+# Release the webcam and close the window
+cap.release()
+cv2.destroyAllWindows()
+
+# Print the final detected fruit
+if detected_fruit:
+    print(f"Final Detected Fruit: {detected_fruit}")
+else:
+    print("No fruit detected.")
